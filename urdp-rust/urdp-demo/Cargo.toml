@@ -1,0 +1,10 @@
+[package]
+name = "urdp-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+urdp-control = { path = "../urdp-control" }
+urdp-wire = { path = "../urdp-wire" }
+clap = { version = "4.0", features = ["derive"] }
+hex = "0.4"
