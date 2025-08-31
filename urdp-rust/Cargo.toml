@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "urdp-control",
+    "urdp-wire",
+    "urdp-demo",
+    "urdp-quic-shim",
+]
+
+resolver = "2"
