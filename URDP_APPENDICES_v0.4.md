@@ -143,25 +143,104 @@ URDP incorporates multiple mechanisms to defend against tampering and abuse:
 
 ## Appendix N — Test Vectors
 
-To facilitate cross‑implementation interoperability, URDP provides canonical test vectors:
+To facilitate cross‑implementation interoperability, URDP provides canonical test vectors. **Varints use RFC 9000 (QUIC) encoding with shortest width.**
 
-- **Varint examples**: the block identifier `1` encodes as `0x01`; `300` encodes as `0xAC 0x02` (little‑endian base‑128).  Use these to verify varint decoders.
-- **REF header**: a sample header with `block_id=5`, `codex_slot=2`, `lane=Silver`, flags set for `ParityOnly`, and an 8‑byte session tag of `0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08` yields the byte sequence:
+### N.1 QUIC varint examples (normative)
+| Value | Bytes (hex) |
+|---:|---|
+| 0 | `00` |
+| 63 | `3F` |
+| 64 | `40 40` |
+| 152 | `40 98` |
+| 1,024 | `44 00` |
+| 16,383 | `7F FF` |
+| 16,384 | `80 00 40 00` |
+| 1,000,000 | `80 00 0F 42 40` |
+| 2^30 − 1 | `BF FF FF FF` |
+| 2^30 | `C0 00 00 00 40 00 00 00` |
 
-  `05 02 40 00 01 02 03 04 05 06 07 08`
+**Notes:** Prefix bits `00/01/10/11` indicate 1/2/4/8‑byte encodings; encoders MUST emit the shortest canonical width.
 
-  The third byte (`0x40`) encodes the lane and flags; here `0x40` means lane=1 (Silver) and `RAW_POLICY=ParityOnly`.
+### N.2 REF header (normative example)
+Inputs: `block_id=12345` → `70 39`; `codex_slot=0x02`; `lane_flags=0x58` (Silver, ParityOnly, REFINE=1); `session_tag=11 22 33 44 55 66 77 88`; `ref_len=1024` → `44 00`.
 
-- **CODEX_OFFER preimage**: the canonical CBOR encoding of an offer containing one codex descriptor has the hex representation:
+REF header bytes (hex):
+```
+70 39  |  02  |  58  |  11 22 33 44 55 66 77 88  |  44 00
+```
 
-  `A2 68 6F 66 66 65 72 5F 69 64 01 6D 63 6F 64 65 78 5F 6C 69 73 74 81 A7 67 63 6F 64 65 78 5F 69 64 50 <codex‑id> 64 6E 61 6D 65 6A 55 52 44 50 20 76 32 2E 30 69 76 65 6E 64 6F 72 5F 69 64 66 77 69 64 67 65 74 64 6F 6D 61 69 6E 73 82 6A 74 65 78 74 75 72 65 2F 42 43 37 66 74 65 78 74 2F 75 74 66 38 69 68 69 6E 74 73 82 66 65 78 70 5F 62 70 62 01 69 65 78 70 5F 64 65 63 5F 75 73 05 6C 70 61 63 6B 5F 73 69 7A 65 19 01 F4 63 73 69 67 58 40 <signature>`
+### N.3 PARITY slice (normative example)
+Inputs: `block_id=12345` (`70 39`), `slice_id=1` (`01`), `seed32=A1 B2 C3 D4`). Bytes (hex):
+```
+70 39  |  01  |  A1 B2 C3 D4  |  <payload…>
+```
 
-  (where `<codex‑id>` is the 32‑byte BLAKE3 hash and `<signature>` is the 64‑byte Ed25519 signature).  Use this vector to test canonicalisation and signing.
+### N.4 ACK/NEED (informative)
+- `ACK_PASS(block_id=12345)` → `70 39`
+- `NEED(block_id=12345, hint=raise_parity=0x02)` → `70 39  02`
 
-- **ACK/NEED frames**: an `ACK_PASS` for `block_id=5` encodes as `05`.  A `NEED` indicating CPU exhaustion uses a prefix byte `0x80` followed by the block identifier (here `0x80 05`).
+### N.5 CODEX_OFFER signing preimage (normative)
+Construct an OFFER with `offer_sig = h''` and canonical CBOR per Appendix J. The canonical CBOR bytes of that map are the signing preimage; verify across languages using the same bytes.
 
-Developers should use these vectors to validate their encoders and decoders.  Implementations must match the exact byte sequences; any deviation indicates a canonicalisation bug.
-
-## Appendix O — Loss & Drop Handling
+### N.6 MicroSystematic REF (informative)
+Inputs: `block_id=64` → `40 40`; `codex_slot=0x03`; `lane_flags=0x20` (Gold, MicroSystematic, no flags); `session_tag=00 11 22 33 44 55 66 77`; `ref_len=256` → `41 00`.
+Bytes:
+```
+40 40  |  03  |  20  |  00 11 22 33 44 55 66 77  |  41 00
+```## Appendix O — Loss & Drop Handling
 
 URDP frames travel over QUIC datagrams; if a REF or PARITY datagram is lost, the receiver simply waits for additional parity slices rather than issuing a retransmission.  The protocol uses adaptive FEC overhead ε based on observed loss; receivers may send `NEED` hints to request more parity.  If a REF is lost entirely, parity ensures that the block still completes on time; you only lose the opportunity for early decode.  Burst loss resilience is achieved by interleaving parity across multiple blocks within a sliding window.  Because all URDP data is paced by QUIC’s congestion control, drop recovery never transmits more than a conventional TCP/QUIC flow would.
+
+## Appendix P — URDP‑X for Video Streaming (profile notes)
+
+### P.1 Scope
+Guidance for real‑time **video** over URDP‑X. Two modes:
+- **Conservative (transport‑aware):** No generative Codex. Use existing codec streams (AV1/HEVC/VP9/H.264), align lanes and parity with frame/layer importance.
+- **Aggressive (codex‑assisted, optional):** Codex provides priors for temporal interpolation and super‑resolution on Silver/Bronze; Gold remains deterministic.
+
+### P.2 Lane mapping (UEP)
+- **Gold:** Audio, captions, keyframes/IDR, base temporal layer (T0) and SVC base (lowest spatial/quality). Strict deadlines.
+- **Silver:** Predicted frames (P‑frames), mid temporal layers (T1/T2), motion‑critical tiles.
+- **Bronze:** Enhancement layers (SVC quality/spatial), B‑frames, film grain. Droppable first.
+
+### P.3 Domain tags & REF header TLVs
+Domains: `video/av1`, `video/h264`, `audio/opus`, etc. REF carries TLVs (type, varint length, value):
+- `0x10 FrameTsUs` — u64 microsecond PTS (8 bytes, big‑endian).
+- `0x11 Ids` — 11 bytes: `gop_id:u32 | frame_id:u32 | temporal_id:u8 | spatial_id:u8 | layer_id:u8`.
+- `0x12 DeadlineMs` — u16 (2 bytes).
+- `0x13 Tile` — 4 bytes: `tile_id:u16 | tile_count:u16`.
+
+Receivers MUST ignore unknown TLV types by length.
+
+### P.4 Scheduling & parity
+- **REF delivery:** Keyframe REF on reliable stream or duplicate once as datagrams; Silver/Bronze REF once (idempotent).
+- **Windowed fountain:** W=6–12 frames; interleave depth D=6–8 for burst loss.
+- **Parity slopes (initial):** Gold 1.0× budget; Silver 0.6×; Bronze 0.3×. Raise on NEED(raise_parity) or early‑CRC < 50%.
+- **Deadlines:** Use `DeadlineMs` per frame; stop Bronze early if Gold/Silver risk missing deadlines.
+
+### P.5 No‑ARQ principle
+Data uses QUIC DATAGRAM; drops are recovered via extra parity, avoiding RTT stalls common with ARQ.
+
+### P.6 Block sizing
+Gold/Silver tiles 16–32 KiB; Bronze up to 64 KiB. CRC per frame super‑block; optional HMAC per 1–2 MiB segment.
+
+### P.7 Defaults
+GOP 1–2 s; base layer keyframes on Gold. ε (overhead): LAN 2–3%, Wi‑Fi 6–10%, LTE/5G 10–18%. Latency: 120–250 ms end‑to‑end; `DeadlineMs` 30–80 ms.
+
+### P.8 Sender policy (drop‑in)
+- **Lane mapping:** Gold = audio/captions + IDR + SVC base; Silver = P/T1–T2 tiles; Bronze = enhancements.
+- **Sizing & timing:** 60/30 fps. Deadlines: Gold 25–40 ms; Silver 40–70 ms; Bronze 70–120 ms. Tiles: Gold 16–32 KiB; Silver 16–32 KiB; Bronze ≤64 KiB.
+- **REF delivery:** Gold on stream or dup; Silver/Bronze once.
+- **Parity windowing:** W=6–12; D=6–8. Initial ε: LAN 2–3%, Wi‑Fi 6–10%, LTE/5G 10–18%.
+- **Slopes:** Gold 1.0×; Silver 0.6×; Bronze 0.3×; raise on NEED or low early‑CRC.
+- **Modes & CPU:** Gold Systematic; Silver ParityOnly on desktop/laptop (Micro(5%) on mobile). Enforce decode budgets.
+
+### P.9 Binary layout (normative)
+Each TLV = `type (u8) + length (QUIC varint) + value`. Multi‑byte integers are **big‑endian**.
+
+### P.10 Examples (informative)
+`FrameTsUs=1,000,000` → `10 08 00 00 0F 42 40 00 00 00`  
+`Ids(gop=7, frame=42, t=1, s=0, l=0)` → `11 0B 00 00 00 07 00 00 00 2A 01 00 00`  
+`DeadlineMs=33` → `12 02 00 21`
+
+Concatenation forms the TLV block; precede it with a varint of total TLV length in the REF header.
